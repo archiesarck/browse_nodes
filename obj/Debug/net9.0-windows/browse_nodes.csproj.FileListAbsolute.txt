@@ -1,0 +1,14 @@
+C:\Users\arck1\Documents\dev\browse_nodes\bin\Debug\net9.0-windows\browse_nodes.exe
+C:\Users\arck1\Documents\dev\browse_nodes\bin\Debug\net9.0-windows\browse_nodes.deps.json
+C:\Users\arck1\Documents\dev\browse_nodes\bin\Debug\net9.0-windows\browse_nodes.runtimeconfig.json
+C:\Users\arck1\Documents\dev\browse_nodes\bin\Debug\net9.0-windows\browse_nodes.dll
+C:\Users\arck1\Documents\dev\browse_nodes\bin\Debug\net9.0-windows\browse_nodes.pdb
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\browse_nodes.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\browse_nodes.AssemblyInfoInputs.cache
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\browse_nodes.AssemblyInfo.cs
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\browse_nodes.csproj.CoreCompileInputs.cache
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\browse_nodes.dll
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\refint\browse_nodes.dll
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\browse_nodes.pdb
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\browse_nodes.genruntimeconfig.cache
+C:\Users\arck1\Documents\dev\browse_nodes\obj\Debug\net9.0-windows\ref\browse_nodes.dll
