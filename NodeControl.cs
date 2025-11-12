@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -288,6 +289,13 @@ namespace browse_nodes
         public PointF GetCenter()
         {
             return new PointF(Location.X + Width / 2f, Location.Y + Height / 2f);
+        }
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public string NodeText
+        {
+            get { return textBox.Text; }
+            set { textBox.Text = value; }
         }
 
         public void SetSelected(bool selected)

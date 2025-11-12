@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace browse_nodes
@@ -19,6 +21,7 @@ namespace browse_nodes
     private bool deleteMode = false;
         private string originalTitle;
     private Label? helpLabelRef = null;
+    private string? currentFilePath = null;
 
         public MainForm()
         {
@@ -51,7 +54,7 @@ namespace browse_nodes
                 ForeColor = Color.White,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(8, 0, 0, 0),
-                Text = "Shortcuts: Ctrl+N = New node, Ctrl+L = Link nodes (select parent then child), Esc = Cancel linking"
+                Text = "Shortcuts: Ctrl+N = New node, Ctrl+L = Link nodes, Ctrl+S = Save, Ctrl+O = Open, Esc = Cancel"
             };
             helpLabelRef = helpLabel;
             helpPanel.Controls.Add(helpLabel);
@@ -393,6 +396,20 @@ namespace browse_nodes
                 return true;
             }
 
+            // Ctrl+S -> save graph
+            if ((keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == Keys.S)
+            {
+                SaveGraph();
+                return true;
+            }
+
+            // Ctrl+O -> open graph
+            if ((keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == Keys.O)
+            {
+                OpenGraph();
+                return true;
+            }
+
             // Escape cancels linking or delete mode
             if ((keyData & Keys.KeyCode) == Keys.Escape)
             {
@@ -430,6 +447,145 @@ namespace browse_nodes
             }
             nodes.Add(node);
             canvas?.Invalidate();
+        }
+
+        private void SaveGraph()
+        {
+            var saveDialog = new SaveFileDialog
+            {
+                Filter = "Node Graph Files (*.nodes)|*.nodes|All Files (*.*)|*.*",
+                DefaultExt = ".nodes",
+                Title = "Save Graph"
+            };
+
+            if (saveDialog.ShowDialog() == DialogResult.OK)
+            {
+                try
+                {
+                    var graphData = new GraphData();
+
+                    // Serialize nodes
+                    foreach (var node in nodes)
+                    {
+                        graphData.Nodes.Add(new NodeData
+                        {
+                            Text = node.NodeText,
+                            X = node.Location.X,
+                            Y = node.Location.Y,
+                            Width = node.Width,
+                            Height = node.Height
+                        });
+                    }
+
+                    // Serialize links (store indices instead of references)
+                    foreach (var link in links)
+                    {
+                        if (link.From != null && link.To != null)
+                        {
+                            int fromIndex = nodes.IndexOf(link.From);
+                            int toIndex = nodes.IndexOf(link.To);
+                            if (fromIndex >= 0 && toIndex >= 0)
+                            {
+                                graphData.Links.Add(new LinkData
+                                {
+                                    FromNodeIndex = fromIndex,
+                                    ToNodeIndex = toIndex
+                                });
+                            }
+                        }
+                    }
+
+                    // Serialize to JSON
+                    var json = JsonSerializer.Serialize(graphData, new JsonSerializerOptions { WriteIndented = true });
+                    File.WriteAllText(saveDialog.FileName, json);
+
+                    currentFilePath = saveDialog.FileName;
+                    Text = originalTitle + " - " + Path.GetFileName(saveDialog.FileName);
+                    MessageBox.Show("Graph saved successfully!", "Save", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Error saving graph: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private void OpenGraph()
+        {
+            var openDialog = new OpenFileDialog
+            {
+                Filter = "Node Graph Files (*.nodes)|*.nodes|All Files (*.*)|*.*",
+                DefaultExt = ".nodes",
+                Title = "Open Graph"
+            };
+
+            if (openDialog.ShowDialog() == DialogResult.OK)
+            {
+                try
+                {
+                    var json = File.ReadAllText(openDialog.FileName);
+                    var graphData = JsonSerializer.Deserialize<GraphData>(json);
+
+                    if (graphData == null)
+                    {
+                        MessageBox.Show("Invalid graph file format.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    // Clear existing nodes and links
+                    if (canvas != null)
+                    {
+                        foreach (var node in nodes)
+                        {
+                            canvas.Controls.Remove(node);
+                        }
+                    }
+                    nodes.Clear();
+                    links.Clear();
+
+                    // Recreate nodes
+                    foreach (var nodeData in graphData.Nodes)
+                    {
+                        var node = new NodeControl(nodeData.Text)
+                        {
+                            Location = new Point(nodeData.X, nodeData.Y),
+                            Size = new Size(nodeData.Width, nodeData.Height)
+                        };
+                        node.LinkInitiated += Node_LinkInitiated;
+                        node.NodeClicked += Node_NodeClicked;
+                        node.PositionChanged += Node_PositionChanged;
+
+                        if (canvas != null)
+                        {
+                            canvas.Controls.Add(node);
+                        }
+                        nodes.Add(node);
+                    }
+
+                    // Recreate links
+                    foreach (var linkData in graphData.Links)
+                    {
+                        if (linkData.FromNodeIndex >= 0 && linkData.FromNodeIndex < nodes.Count &&
+                            linkData.ToNodeIndex >= 0 && linkData.ToNodeIndex < nodes.Count)
+                        {
+                            links.Add(new Link
+                            {
+                                From = nodes[linkData.FromNodeIndex],
+                                To = nodes[linkData.ToNodeIndex]
+                            });
+                        }
+                    }
+
+                    currentFilePath = openDialog.FileName;
+                    Text = originalTitle + " - " + Path.GetFileName(openDialog.FileName);
+                    canvas?.Invalidate();
+                    MessageBox.Show("Graph loaded successfully!", "Open", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Error loading graph: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
         }
     }
 }
