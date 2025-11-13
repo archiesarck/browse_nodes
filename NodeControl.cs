@@ -280,8 +280,6 @@ namespace browse_nodes
         protected override void OnSizeChanged(EventArgs e)
         {
             base.OnSizeChanged(e);
-            if (Width < minSize.Width) Width = minSize.Width;
-            if (Height < minSize.Height) Height = minSize.Height;
             PositionChanged?.Invoke(this, EventArgs.Empty);
             UpdateRoundedRegion();
         }

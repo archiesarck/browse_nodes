@@ -143,6 +143,25 @@ namespace browse_nodes
             if (IsCtrlKey(keyData, Keys.D)) { doc.ToggleDeleteMode(); UpdateHelpLabel("Delete mode toggled"); return true; }
             if (IsCtrlKey(keyData, Keys.L)) { doc.ToggleKeyboardLinkMode(); UpdateHelpLabel("Link mode toggled"); return true; }
             if (IsCtrlKey(keyData, Keys.S)) { doc.Save(); UpdateTabTitle(doc); return true; }
+
+            // Ctrl+ and Ctrl- zoom shortcuts (support OEM and numpad)
+            if ((keyData & Keys.Control) == Keys.Control)
+            {
+                var key = keyData & Keys.KeyCode;
+                if (key == Keys.Oemplus || key == Keys.Add)
+                {
+                    doc.ZoomIn();
+                    UpdateHelpLabel("Zoom in");
+                    return true;
+                }
+                if (key == Keys.OemMinus || key == Keys.Subtract)
+                {
+                    doc.ZoomOut();
+                    UpdateHelpLabel("Zoom out");
+                    return true;
+                }
+            }
+
             if (keyData == Keys.Escape) { doc.CancelModes(); UpdateHelpLabel("Modes cleared"); return true; }
 
             return base.ProcessCmdKey(ref msg, keyData);

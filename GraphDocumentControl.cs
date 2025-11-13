@@ -27,10 +27,20 @@ namespace browse_nodes
         // delete mode state
         private bool deleteMode = false;
 
-    public string? CurrentFilePath { get; private set; }
-    // Optional display name for untitled docs, e.g., "Untitled 1". If null, we use file name or "Untitled".
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public string? DisplayName { get; set; }
+        // pan/zoom state (world -> screen: screen = world * zoom + pan)
+        private float zoom = 1f;
+        private const float MinZoom = 0.2f;
+        private const float MaxZoom = 4f;
+        private PointF pan = new PointF(0, 0);
+        private bool isPanning = false;
+        private Point lastPanMouse;
+        private bool suppressNodeSync = false;
+        private readonly Dictionary<NodeControl, RectangleF> logicalBounds = new Dictionary<NodeControl, RectangleF>();
+
+        public string? CurrentFilePath { get; private set; }
+        // Optional display name for untitled docs, e.g., "Untitled 1". If null, we use file name or "Untitled".
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public string? DisplayName { get; set; }
 
         public GraphDocumentControl()
         {
@@ -44,7 +54,11 @@ namespace browse_nodes
             };
             canvas.Paint += Canvas_Paint;
             canvas.MouseDown += Canvas_MouseDown;
+            canvas.MouseMove += Canvas_MouseMove;
+            canvas.MouseUp += Canvas_MouseUp;
+            canvas.MouseLeave += Canvas_MouseUp;
             canvas.MouseClick += Canvas_MouseClick;
+            canvas.MouseWheel += Canvas_MouseWheel;
             canvas.ControlRemoved += Canvas_ControlRemoved;
             Controls.Add(canvas);
 
@@ -80,10 +94,11 @@ namespace browse_nodes
 
             ClearDocument();
 
-            // Create nodes
+            // Create nodes (logical coordinates)
             foreach (var nd in data.Nodes)
             {
-                var nc = CreateNode(nd.Text, new Rectangle(nd.X, nd.Y, nd.Width, nd.Height));
+                var logical = new Rectangle(nd.X, nd.Y, nd.Width, nd.Height);
+                var nc = CreateNode(nd.Text, logical);
                 canvas.Controls.Add(nc);
                 nodes.Add(nc);
             }
@@ -100,7 +115,7 @@ namespace browse_nodes
 
             CurrentFilePath = path;
             DisplayName = null; // use file name from now on
-            canvas.Invalidate();
+            ApplyTransformToAllNodes();
         }
 
         public void Save()
@@ -138,13 +153,14 @@ namespace browse_nodes
             {
                 var nc = nodes[i];
                 nodeIndex[nc] = i;
+                var logical = GetLogicalBounds(nc);
                 data.Nodes.Add(new NodeData
                 {
                     Text = nc.NodeText,
-                    X = nc.Left,
-                    Y = nc.Top,
-                    Width = nc.Width,
-                    Height = nc.Height
+                    X = (int)Math.Round(logical.X),
+                    Y = (int)Math.Round(logical.Y),
+                    Width = (int)Math.Round(logical.Width),
+                    Height = (int)Math.Round(logical.Height)
                 });
             }
             foreach (var l in links)
@@ -172,15 +188,16 @@ namespace browse_nodes
 
         public void AddNodeInteractive()
         {
-            var mousePos = canvas.PointToClient(Control.MousePosition);
-            var center = new Point(
-                Math.Max(0, Math.Min(canvas.ClientSize.Width - 140, mousePos.X - 70)),
-                Math.Max(0, Math.Min(canvas.ClientSize.Height - 90, mousePos.Y - 45))
-            );
-            var nc = CreateNode("Node", new Rectangle(center, new Size(140, 90)));
+            var mousePosScreen = canvas.PointToClient(Control.MousePosition);
+            var mouseWorld = ScreenToWorld(mousePosScreen);
+            var size = new SizeF(140, 90);
+            var topLeft = new PointF(mouseWorld.X - size.Width / 2f, mouseWorld.Y - size.Height / 2f);
+            var logical = new RectangleF(topLeft, size);
+
+            var nc = CreateNode("Node", Rectangle.Round(logical));
             canvas.Controls.Add(nc);
             nodes.Add(nc);
-            canvas.Invalidate();
+            ApplyTransformToAllNodes();
         }
 
         public void ToggleDeleteMode()
@@ -226,16 +243,16 @@ namespace browse_nodes
             {
                 links.RemoveAll(l => l.From == removed || l.To == removed);
                 nodes.Remove(removed);
+                logicalBounds.Remove(removed);
                 canvas.Invalidate();
             }
         }
 
-        private NodeControl CreateNode(string text, Rectangle bounds)
+        private NodeControl CreateNode(string text, Rectangle logicalBoundsRect)
         {
-            var nc = new NodeControl(text)
-            {
-                Bounds = bounds
-            };
+            var nc = new NodeControl(text);
+            logicalBounds[nc] = logicalBoundsRect;
+            nc.Bounds = TransformRect(logicalBoundsRect);
             nc.PositionChanged += Node_PositionChanged;
             nc.LinkInitiated += Node_LinkInitiated;
             nc.NodeClicked += Node_NodeClicked;
@@ -244,6 +261,9 @@ namespace browse_nodes
 
         private void Node_PositionChanged(object? sender, EventArgs e)
         {
+            if (suppressNodeSync || sender is not NodeControl nc) { canvas.Invalidate(); return; }
+            var logical = InverseTransformRect(nc.Bounds);
+            logicalBounds[nc] = logical;
             canvas.Invalidate();
         }
 
@@ -268,6 +288,7 @@ namespace browse_nodes
                 links.RemoveAll(l => l.From == clicked || l.To == clicked);
                 canvas.Controls.Remove(clicked);
                 nodes.Remove(clicked);
+                logicalBounds.Remove(clicked);
                 canvas.Invalidate();
                 return;
             }
@@ -330,6 +351,7 @@ namespace browse_nodes
                 links.RemoveAll(l => l.From == hitNode || l.To == hitNode);
                 canvas.Controls.Remove(hitNode);
                 nodes.Remove(hitNode);
+                logicalBounds.Remove(hitNode);
                 canvas.Invalidate();
                 return;
             }
@@ -353,12 +375,53 @@ namespace browse_nodes
 
         private void Canvas_MouseDown(object? sender, MouseEventArgs e)
         {
-            // clicking empty canvas cancels linking mode
             if (e.Button == MouseButtons.Left && linkingSource != null)
             {
                 linkingSource = null;
                 Cursor = Cursors.Default;
                 canvas.Invalidate();
+            }
+
+            if (e.Button == MouseButtons.Left)
+            {
+                isPanning = true;
+                lastPanMouse = e.Location;
+                Cursor = Cursors.SizeAll;
+            }
+        }
+
+        private void Canvas_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if (isPanning)
+            {
+                var dx = e.Location.X - lastPanMouse.X;
+                var dy = e.Location.Y - lastPanMouse.Y;
+                pan = new PointF(pan.X + dx, pan.Y + dy);
+                lastPanMouse = e.Location;
+                ApplyTransformToAllNodes();
+            }
+        }
+
+        private void Canvas_MouseUp(object? sender, EventArgs e)
+        {
+            if (isPanning)
+            {
+                isPanning = false;
+                Cursor = Cursors.Default;
+            }
+        }
+
+        private void Canvas_MouseWheel(object? sender, MouseEventArgs e)
+        {
+            if (e.Delta > 0)
+            {
+                // Scroll up = zoom in
+                ZoomAt(e.Location, zoom * 1.1f);
+            }
+            else if (e.Delta < 0)
+            {
+                // Scroll down = zoom out
+                ZoomAt(e.Location, zoom / 1.1f);
             }
         }
 
@@ -442,12 +505,72 @@ namespace browse_nodes
         {
             links.Clear();
             nodes.Clear();
+            logicalBounds.Clear();
             canvas.Controls.Clear();
             linkingSource = null;
             keyboardLinkFirst = null;
             keyboardLinkingMode = false;
             deleteMode = false;
+            zoom = 1f;
+            pan = new PointF(0, 0);
             canvas.Invalidate();
+        }
+
+        // Helpers: transforms
+        private PointF ScreenToWorld(PointF s) => new PointF((s.X - pan.X) / zoom, (s.Y - pan.Y) / zoom);
+        private PointF WorldToScreen(PointF w) => new PointF(w.X * zoom + pan.X, w.Y * zoom + pan.Y);
+        private Rectangle TransformRect(RectangleF wr)
+        {
+            var x = wr.X * zoom + pan.X;
+            var y = wr.Y * zoom + pan.Y;
+            var w = wr.Width * zoom;
+            var h = wr.Height * zoom;
+            return Rectangle.Round(new RectangleF(x, y, w, h));
+        }
+        private RectangleF InverseTransformRect(Rectangle r)
+        {
+            return new RectangleF((r.X - pan.X) / zoom, (r.Y - pan.Y) / zoom, r.Width / zoom, r.Height / zoom);
+        }
+        private RectangleF GetLogicalBounds(NodeControl nc)
+        {
+            if (logicalBounds.TryGetValue(nc, out var rect)) return rect;
+            // fallback from current screen bounds
+            return InverseTransformRect(nc.Bounds);
+        }
+        private void ApplyTransformToAllNodes()
+        {
+            suppressNodeSync = true;
+            foreach (var nc in nodes)
+            {
+                if (logicalBounds.TryGetValue(nc, out var wr))
+                {
+                    nc.Bounds = TransformRect(wr);
+                }
+            }
+            suppressNodeSync = false;
+            canvas.Invalidate();
+        }
+
+        // Public: zoom API for host form shortcuts
+        public void ZoomIn() => SetZoom(zoom * 1.1f);
+        public void ZoomOut() => SetZoom(zoom / 1.1f);
+        private void SetZoom(float newZoom)
+        {
+            newZoom = Math.Max(MinZoom, Math.Min(MaxZoom, newZoom));
+            var centerScreen = new PointF(canvas.ClientSize.Width / 2f, canvas.ClientSize.Height / 2f);
+            var centerWorld = ScreenToWorld(centerScreen);
+            zoom = newZoom;
+            pan = new PointF(centerScreen.X - centerWorld.X * zoom, centerScreen.Y - centerWorld.Y * zoom);
+            ApplyTransformToAllNodes();
+        }
+
+        private void ZoomAt(Point screenPoint, float newZoom)
+        {
+            newZoom = Math.Max(MinZoom, Math.Min(MaxZoom, newZoom));
+            var worldPoint = ScreenToWorld(screenPoint);
+            zoom = newZoom;
+            pan = new PointF(screenPoint.X - worldPoint.X * zoom, screenPoint.Y - worldPoint.Y * zoom);
+            ApplyTransformToAllNodes();
         }
     }
 }
