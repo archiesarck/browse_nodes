@@ -1,590 +1,364 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Text.Json;
+using System.Linq;
 using System.Windows.Forms;
+using System.Runtime.InteropServices;
 
 namespace browse_nodes
 {
     public class MainForm : Form
     {
-    private Panel? canvas;
-    private List<NodeControl> nodes = new List<NodeControl>();
-    private List<Link> links = new List<Link>();
-    private NodeControl? linkingSource;
+    private readonly TabControl tabControl;
+    private readonly Label helpLabelRef;
+    private readonly FlowLayoutPanel topTabsPanel;
+    private int untitledCounter = 0;
 
-        // keyboard linking state
-        private bool keyboardLinkingMode = false;
-    private NodeControl? keyboardLinkFirst = null;
-    // delete mode state
-    private bool deleteMode = false;
-        private string originalTitle;
-    private Label? helpLabelRef = null;
-    private string? currentFilePath = null;
+    private static readonly Color BgDark = Color.FromArgb(25, 25, 28);
+    private static readonly Color BgPanel = Color.FromArgb(30, 30, 32);
+    private static readonly Color BgTabActive = Color.FromArgb(38, 38, 44);
+    private static readonly Color BgTabInactive = Color.FromArgb(28, 28, 30);
 
         public MainForm()
         {
             Text = "browse_nodes";
-            originalTitle = Text;
             KeyPreview = true;
-            KeyDown += MainForm_KeyDown;
-
-            Size = new Size(480 * 4, 320 * 4);
+            Size = new Size(1200, 800);
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+            BackColor = BgDark;
 
-            Controls.Clear();
-
-            // set main window background to dark grey
-            this.BackColor = Color.FromArgb(45, 45, 48);
-
-            // small help panel at the top with keyboard shortcuts
-            var helpPanel = new Panel
-            {
-                Location = new Point(0, 0),
-                Size = new Size(ClientSize.Width, 40),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-                BackColor = Color.FromArgb(60, 60, 64)
-            };
-            var helpLabel = new Label
+            helpLabelRef = new Label
             {
                 AutoSize = false,
                 Dock = DockStyle.Fill,
                 ForeColor = Color.White,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(8, 0, 0, 0),
-                Text = "Shortcuts: Ctrl+N = New node, Ctrl+L = Link nodes, Ctrl+S = Save, Ctrl+O = Open, Esc = Cancel"
+                Text = "Shortcuts: Ctrl+N Node | Ctrl+T New Tab | Ctrl+O Open | Ctrl+L Link | Ctrl+D Delete | Ctrl+S Save | Esc Cancel | Active: -"
             };
-            helpLabelRef = helpLabel;
-            helpPanel.Controls.Add(helpLabel);
-            Controls.Add(helpPanel);
-
-            // canvas where nodes live and links are drawn behind nodes
-            canvas = new Panel
+            Controls.Add(new Panel
             {
-                Location = new Point(0, 40),
-                Size = new Size(ClientSize.Width, ClientSize.Height - 40),
-                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-                BackColor = Color.FromArgb(45, 45, 48), // dark grey canvas
+                Dock = DockStyle.Bottom,
+                Height = 28,
+                BackColor = BgPanel,
+                Controls = { helpLabelRef }
+            });
+
+            topTabsPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = 28,
+                BackColor = BgPanel,
+                AutoScroll = true,
+                WrapContents = false
             };
-            canvas.Paint += Canvas_Paint;
-            canvas.MouseDown += Canvas_MouseDown;
-            canvas.MouseClick += Canvas_MouseClick;
-            Controls.Add(canvas);
-        }
+            Controls.Add(topTabsPanel);
 
-        private void Canvas_MouseClick(object? sender, MouseEventArgs e)
-        {
-            if (deleteMode && e.Button == MouseButtons.Left)
+            tabControl = new TabControl
             {
-                // check for node under cursor first
-                if (canvas == null) return;
-                var pt = e.Location;
-                // iterate nodes (canvas.Controls contains NodeControl instances)
-                NodeControl? hitNode = null;
-                foreach (Control c in canvas.Controls)
+                Dock = DockStyle.Fill,
+                Alignment = TabAlignment.Bottom,
+                DrawMode = TabDrawMode.OwnerDrawFixed,
+                HotTrack = true,
+                BackColor = BgDark,
+                ItemSize = new Size(0, 24),
+                ContextMenuStrip = new ContextMenuStrip
                 {
-                    if (c is NodeControl nc)
+                    Items =
                     {
-                        if (nc.Bounds.Contains(pt)) { hitNode = nc; break; }
+                        new ToolStripMenuItem("New Untitled Tab (Ctrl+T)", null, (s, e) => CreateNewDocumentTab()),
+                        new ToolStripMenuItem("Open… (Ctrl+O)", null, (s, e) => OpenGraphIntoNewTab()),
+                        new ToolStripMenuItem("Show Open Tabs…", null, (s, e) => ShowOpenTabsDialog()),
+                        new ToolStripSeparator(),
+                        new ToolStripMenuItem("Close Tab", null, (s, e) => CloseActiveTab())
                     }
                 }
+            };
+            tabControl.DrawItem += TabControl_DrawItem;
+            tabControl.Paint += TabControl_Paint;
+            tabControl.SelectedIndexChanged += (s, e) => RefreshUI();
+            tabControl.ControlAdded += (s, e) => RefreshUI();
+            tabControl.ControlRemoved += (s, e) => RefreshUI();
+            Controls.Add(tabControl);
 
-                if (hitNode != null)
+            Shown += MainForm_Shown;
+            HandleCreated += (s, e) => TryApplyDarkTitleBar();
+        }
+
+        private void MainForm_Shown(object? sender, EventArgs e)
+        {
+            CreateNewDocumentTab();
+        }
+
+        private GraphDocumentControl? ActiveDoc => tabControl.SelectedTab?.Controls.OfType<GraphDocumentControl>().FirstOrDefault();
+
+        private void CreateNewDocumentTab()
+        {
+            var doc = new GraphDocumentControl();
+            doc.NewBlank();
+            doc.DisplayName = $"Untitled {++untitledCounter}";
+            var page = new TabPage(doc.GetSuggestedTabTitle()) { BackColor = BgDark };
+            page.Controls.Add(doc);
+            tabControl.TabPages.Add(page);
+            tabControl.SelectedTab = page;
+        }
+
+        private void OpenGraphIntoNewTab()
+        {
+            using var openDialog = new OpenFileDialog
+            {
+                Filter = "Node Graph (*.nodes)|*.nodes|JSON (*.json)|*.json|All files (*.*)|*.*",
+                Multiselect = true
+            };
+            if (openDialog.ShowDialog(this) == DialogResult.OK)
+            {
+                foreach (var file in openDialog.FileNames)
                 {
-                    // remove links referencing this node
-                    links.RemoveAll(l => l.From == hitNode || l.To == hitNode);
-                    canvas.Controls.Remove(hitNode);
-                    nodes.Remove(hitNode);
-                    canvas.Invalidate();
-                    // if no nodes remain, exit delete mode so Esc will work and UI isn't stuck
-                    if (nodes.Count == 0)
+                    try
                     {
-                        ExitDeleteMode();
+                        var doc = new GraphDocumentControl();
+                        doc.LoadFromFile(file);
+                        var page = new TabPage(Path.GetFileName(file)) { BackColor = BgDark };
+                        page.Controls.Add(doc);
+                        tabControl.TabPages.Add(page);
+                        tabControl.SelectedTab = page;
                     }
-                    return;
-                }
-
-                // otherwise check for link near click
-                // simple hit-test: distance to segment < threshold
-                const float thresh = 6f;
-                for (int i = links.Count - 1; i >= 0; i--)
-                {
-                    var link = links[i];
-                    if (link.From == null || link.To == null) continue;
-                    var p1 = link.From.GetCenter();
-                    var p2 = link.To.GetCenter();
-                    var local = pt; // pt is already in canvas coords
-                    if (DistancePointToSegment(local, p1, p2) <= thresh)
+                    catch (Exception ex)
                     {
-                        links.RemoveAt(i);
-                        canvas.Invalidate();
-                        break;
+                        MessageBox.Show(this, $"Failed to open {file}: {ex.Message}", "Open Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 }
             }
         }
 
-        private float DistancePointToSegment(PointF p, PointF a, PointF b)
-        {
-            // from https://stackoverflow.com/questions/849211/shortest-distance-between-a-point-and-a-line-segment
-            float dx = b.X - a.X;
-            float dy = b.Y - a.Y;
-            if (dx == 0 && dy == 0)
-            {
-                dx = p.X - a.X;
-                dy = p.Y - a.Y;
-                return (float)Math.Sqrt(dx * dx + dy * dy);
-            }
-            float t = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / (dx * dx + dy * dy);
-            t = Math.Max(0, Math.Min(1, t));
-            float projX = a.X + t * dx;
-            float projY = a.Y + t * dy;
-            float distX = p.X - projX;
-            float distY = p.Y - projY;
-            return (float)Math.Sqrt(distX * distX + distY * distY);
-        }
-
-        private void Canvas_MouseDown(object? sender, MouseEventArgs e)
-        {
-            // clicking empty canvas cancels linking mode
-            if (e.Button == MouseButtons.Left && linkingSource != null)
-            {
-                linkingSource = null;
-                Cursor = Cursors.Default;
-                canvas?.Invalidate();
-            }
-        }
-
-        private void Canvas_Paint(object? sender, PaintEventArgs e)
-        {
-            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-
-            // use a slightly dull white for links
-            var linkColor = Color.FromArgb(220, 220, 220);
-            using (var pen = new Pen(linkColor, 2))
-            {
-                foreach (var link in links)
-                {
-                    if (link.From != null && link.To != null)
-                        DrawArrow(e.Graphics, pen, link.From.GetCenter(), link.To.GetCenter());
-                }
-            }
-
-            // hint line when linking from context-menu initiated link
-            if (linkingSource != null && canvas != null)
-            {
-                var p1 = linkingSource.GetCenter();
-                var p2 = canvas.PointToClient(Cursor.Position);
-                using (var pen = new Pen(Color.FromArgb(180, 180, 180), 1) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash })
-                {
-                    e.Graphics.DrawLine(pen, p1, p2);
-                }
-            }
-        }
-
-        private void DrawArrow(Graphics g, Pen pen, PointF p1, PointF p2)
-        {
-            g.DrawLine(pen, p1, p2);
-
-            const float headSize = 10f;
-            var dx = p1.X - p2.X;
-            var dy = p1.Y - p2.Y;
-            var len = (float)Math.Sqrt(dx * dx + dy * dy);
-            if (len == 0) return;
-            var ux = dx / len;
-            var uy = dy / len;
-
-            var left = new PointF(p2.X + ux * headSize - uy * (headSize / 2f),
-                                  p2.Y + uy * headSize + ux * (headSize / 2f));
-            var right = new PointF(p2.X + ux * headSize + uy * (headSize / 2f),
-                                   p2.Y + uy * headSize - ux * (headSize / 2f));
-
-            // fill arrowhead using the pen color (dull white)
-            using (var brush = new SolidBrush(pen.Color))
-            {
-                g.FillPolygon(brush, new[] { p2, left, right });
-            }
-        }
-
-        private void Node_PositionChanged(object? sender, EventArgs e)
-        {
-            canvas?.Invalidate();
-        }
-
-        private void Node_LinkInitiated(object? sender, EventArgs e)
-        {
-            linkingSource = sender as NodeControl;
-            Cursor = Cursors.Cross;
-            canvas?.Invalidate();
-        }
-
-        private void Node_NodeClicked(object? sender, EventArgs e)
-        {
-            var clicked = sender as NodeControl;
-            if (clicked == null) return;
-
-            // if in delete mode, remove the clicked node (this handles clicks that go to the node control)
-            if (deleteMode)
-            {
-                // remove links referencing this node
-                links.RemoveAll(l => l.From == clicked || l.To == clicked);
-                if (canvas != null)
-                {
-                    canvas.Controls.Remove(clicked);
-                }
-                nodes.Remove(clicked);
-                canvas?.Invalidate();
-                // if no nodes remain, exit delete mode so Esc will work and UI isn't stuck
-                if (nodes.Count == 0)
-                {
-                    ExitDeleteMode();
-                }
-                return;
-            }
-
-            // keyboard linking mode (Ctrl+L)
-            if (keyboardLinkingMode)
-            {
-                if (keyboardLinkFirst == null)
-                {
-                    keyboardLinkFirst = clicked;
-                    keyboardLinkFirst?.SetSelected(true);
-                }
-                else
-                {
-                    if (clicked != keyboardLinkFirst)
-                    {
-                        if (keyboardLinkFirst != null)
-                            links.Add(new Link { From = keyboardLinkFirst, To = clicked });
-                    }
-                    keyboardLinkFirst?.SetSelected(false);
-                    CancelKeyboardLinkMode();
-                    canvas?.Invalidate();
-                }
-                return;
-            }
-
-            // context-menu linking
-            if (linkingSource != null)
-            {
-                if (clicked != linkingSource)
-                {
-                    links.Add(new Link { From = linkingSource, To = clicked });
-                }
-                linkingSource = null;
-                Cursor = Cursors.Default;
-                canvas?.Invalidate();
-            }
-        }
-
-        private void CancelKeyboardLinkMode()
-        {
-            keyboardLinkingMode = false;
-            keyboardLinkFirst = null;
-            Cursor = Cursors.Default;
-            Text = originalTitle;
-        }
-
-        private void ExitDeleteMode()
-        {
-            deleteMode = false;
-            Cursor = Cursors.Default;
-            if (helpLabelRef != null)
-                helpLabelRef.Text = "Shortcuts: Ctrl+N = New node, Ctrl+L = Link nodes (select parent then child), Esc = Cancel linking";
-            // ensure keyboard focus returns to the main form/canvas so ProcessCmdKey/KeyPreview still receive shortcuts
-            try
-            {
-                // bring the form to the foreground and clear any active child control
-                this.Activate();
-                this.ActiveControl = null;
-                if (canvas != null)
-                {
-                    // prefer Select over Focus in some focus scenarios
-                    canvas.Select();
-                    canvas.Focus();
-                }
-            }
-            catch
-            {
-                // best-effort; don't throw from UI cleanup
-            }
-        }
-
-        private void MainForm_KeyDown(object? sender, KeyEventArgs e)
-        {
-            // Ctrl+N -> create new node
-            if (e.Control && e.KeyCode == Keys.N)
-            {
-                AddNode();
-                e.Handled = true;
-                return;
-            }
-
-            // Ctrl+D -> delete mode
-            if (e.Control && e.KeyCode == Keys.D)
-            {
-                deleteMode = true;
-                Cursor = Cursors.No;
-                if (helpLabelRef != null)
-                    helpLabelRef.Text = "Delete mode: click nodes or links to delete. Esc to cancel.";
-                e.Handled = true;
-                return;
-            }
-
-            // Ctrl+L -> keyboard link mode
-            if (e.Control && e.KeyCode == Keys.L)
-            {
-                keyboardLinkingMode = true;
-                keyboardLinkFirst = null;
-                Cursor = Cursors.Cross;
-                Text = originalTitle + " [Link Mode: select parent then child]";
-                e.Handled = true;
-                return;
-            }
-
-            // Escape cancels linking or delete mode
-            if (e.KeyCode == Keys.Escape)
-            {
-                if (keyboardLinkingMode)
-                {
-                    keyboardLinkFirst?.SetSelected(false);
-                    CancelKeyboardLinkMode();
-                    e.Handled = true;
-                    return;
-                }
-                if (deleteMode)
-                {
-                    deleteMode = false;
-                    Cursor = Cursors.Default;
-                    if (helpLabelRef != null)
-                        helpLabelRef.Text = "Shortcuts: Ctrl+N = New node, Ctrl+L = Link nodes (select parent then child), Esc = Cancel linking";
-                    e.Handled = true;
-                    return;
-                }
-            }
-        }
-
-        // Handle shortcuts at a low level so they work even if focus is on child controls
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            // Ctrl+N -> create new node
-            if ((keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == Keys.N)
-            {
-                AddNode();
-                return true;
-            }
+            if (IsCtrlKey(keyData, Keys.T)) { CreateNewDocumentTab(); return true; }
+            if (IsCtrlKey(keyData, Keys.O)) { OpenGraphIntoNewTab(); return true; }
 
-            // Ctrl+D -> enter delete mode
-            if ((keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == Keys.D)
-            {
-                deleteMode = true;
-                Cursor = Cursors.No;
-                if (helpLabelRef != null)
-                    helpLabelRef.Text = "Delete mode: click nodes or links to delete. Esc to cancel.";
-                return true;
-            }
+            var doc = ActiveDoc;
+            if (doc == null) return base.ProcessCmdKey(ref msg, keyData);
 
-            // Ctrl+L -> keyboard link mode
-            if ((keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == Keys.L)
-            {
-                keyboardLinkingMode = true;
-                keyboardLinkFirst = null;
-                Cursor = Cursors.Cross;
-                Text = originalTitle + " [Link Mode: select parent then child]";
-                return true;
-            }
-
-            // Ctrl+S -> save graph
-            if ((keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == Keys.S)
-            {
-                SaveGraph();
-                return true;
-            }
-
-            // Ctrl+O -> open graph
-            if ((keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == Keys.O)
-            {
-                OpenGraph();
-                return true;
-            }
-
-            // Escape cancels linking or delete mode
-            if ((keyData & Keys.KeyCode) == Keys.Escape)
-            {
-                if (keyboardLinkingMode)
-                {
-                    keyboardLinkFirst?.SetSelected(false);
-                    CancelKeyboardLinkMode();
-                    return true;
-                }
-                if (deleteMode)
-                {
-                    ExitDeleteMode();
-                    return true;
-                }
-            }
+            if (IsCtrlKey(keyData, Keys.N)) { doc.AddNodeInteractive(); return true; }
+            if (IsCtrlKey(keyData, Keys.D)) { doc.ToggleDeleteMode(); UpdateHelpLabel("Delete mode toggled"); return true; }
+            if (IsCtrlKey(keyData, Keys.L)) { doc.ToggleKeyboardLinkMode(); UpdateHelpLabel("Link mode toggled"); return true; }
+            if (IsCtrlKey(keyData, Keys.S)) { doc.Save(); UpdateTabTitle(doc); return true; }
+            if (keyData == Keys.Escape) { doc.CancelModes(); UpdateHelpLabel("Modes cleared"); return true; }
 
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
-        private void AddNode()
+        private static bool IsCtrlKey(Keys keyData, Keys key) =>
+            (keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == key;
+
+        private void UpdateHelpLabel(string status) =>
+            helpLabelRef.Text = $"Shortcuts: Ctrl+N Node | Ctrl+T New Tab | Ctrl+O Open | Ctrl+L Link | Ctrl+D Delete | Ctrl+S Save | Esc Cancel | Active: {tabControl.SelectedTab?.Text ?? "-"}    [{status}]";
+
+        private void UpdateTabTitle(GraphDocumentControl doc)
         {
-            string nodeText = Microsoft.VisualBasic.Interaction.InputBox("Enter node text:", "Add Node", "New Node");
-            if (string.IsNullOrWhiteSpace(nodeText))
-                return;
-
-            var node = new NodeControl(nodeText);
-            node.Location = new Point(40 + nodes.Count * 160, 80);
-            node.LinkInitiated += Node_LinkInitiated;
-            node.NodeClicked += Node_NodeClicked;
-            node.PositionChanged += Node_PositionChanged;
-
-            if (canvas != null)
+            var page = tabControl.TabPages.Cast<TabPage>().FirstOrDefault(p => p.Controls.Contains(doc));
+            if (page != null)
             {
-                canvas.Controls.Add(node);
-            }
-            nodes.Add(node);
-            canvas?.Invalidate();
-        }
-
-        private void SaveGraph()
-        {
-            var saveDialog = new SaveFileDialog
-            {
-                Filter = "Node Graph Files (*.nodes)|*.nodes|All Files (*.*)|*.*",
-                DefaultExt = ".nodes",
-                Title = "Save Graph"
-            };
-
-            if (saveDialog.ShowDialog() == DialogResult.OK)
-            {
-                try
-                {
-                    var graphData = new GraphData();
-
-                    // Serialize nodes
-                    foreach (var node in nodes)
-                    {
-                        graphData.Nodes.Add(new NodeData
-                        {
-                            Text = node.NodeText,
-                            X = node.Location.X,
-                            Y = node.Location.Y,
-                            Width = node.Width,
-                            Height = node.Height
-                        });
-                    }
-
-                    // Serialize links (store indices instead of references)
-                    foreach (var link in links)
-                    {
-                        if (link.From != null && link.To != null)
-                        {
-                            int fromIndex = nodes.IndexOf(link.From);
-                            int toIndex = nodes.IndexOf(link.To);
-                            if (fromIndex >= 0 && toIndex >= 0)
-                            {
-                                graphData.Links.Add(new LinkData
-                                {
-                                    FromNodeIndex = fromIndex,
-                                    ToNodeIndex = toIndex
-                                });
-                            }
-                        }
-                    }
-
-                    // Serialize to JSON
-                    var json = JsonSerializer.Serialize(graphData, new JsonSerializerOptions { WriteIndented = true });
-                    File.WriteAllText(saveDialog.FileName, json);
-
-                    currentFilePath = saveDialog.FileName;
-                    Text = originalTitle + " - " + Path.GetFileName(saveDialog.FileName);
-                    MessageBox.Show("Graph saved successfully!", "Save", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("Error saving graph: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                page.Text = doc.GetSuggestedTabTitle();
+                RefreshUI();
             }
         }
 
-        private void OpenGraph()
+        private void HandleOpenChoice()
         {
-            var openDialog = new OpenFileDialog
+            var result = MessageBox.Show(this, "Open: Yes = New blank file, No = Open existing file(s)", "Open",
+                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (result == DialogResult.Yes) CreateNewDocumentTab();
+            else if (result == DialogResult.No) OpenGraphIntoNewTab();
+        }
+
+        private void RefreshUI()
+        {
+            helpLabelRef.Text = $"Shortcuts: Ctrl+N Node | Ctrl+T New Tab | Ctrl+O Open | Ctrl+L Link | Ctrl+D Delete | Ctrl+S Save | Esc Cancel | Active: {tabControl.SelectedTab?.Text ?? "-"}    [Tabs: {tabControl.TabPages.Count}]";
+            RefreshTopTabsPanel();
+        }
+
+        private void CloseActiveTab()
+        {
+            if (tabControl.SelectedTab != null)
             {
-                Filter = "Node Graph Files (*.nodes)|*.nodes|All Files (*.*)|*.*",
-                DefaultExt = ".nodes",
-                Title = "Open Graph"
+                tabControl.TabPages.Remove(tabControl.SelectedTab);
+                if (tabControl.TabPages.Count == 0) CreateNewDocumentTab();
+            }
+        }
+
+        private void ShowOpenTabsDialog()
+        {
+            using var dlg = new Form
+            {
+                Text = "Open Tabs",
+                StartPosition = FormStartPosition.CenterParent,
+                Size = new Size(400, 300),
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                BackColor = BgDark,
+                ForeColor = Color.White
             };
-
-            if (openDialog.ShowDialog() == DialogResult.OK)
+            var list = new ListBox { Dock = DockStyle.Fill, BackColor = BgPanel, ForeColor = Color.White };
+            for (int i = 0; i < tabControl.TabPages.Count; i++)
             {
-                try
+                var page = tabControl.TabPages[i];
+                list.Items.Add((i + 1).ToString().PadLeft(2) + ") " + page.Text);
+            }
+            list.DoubleClick += (s, e) => { if (list.SelectedIndex >= 0) dlg.DialogResult = DialogResult.OK; };
+            list.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter && list.SelectedIndex >= 0) { dlg.DialogResult = DialogResult.OK; e.Handled = true; } };
+            var panel = new Panel { Dock = DockStyle.Bottom, Height = 40, BackColor = BgPanel };
+            var ok = new Button { Text = "Activate", DialogResult = DialogResult.OK, Anchor = AnchorStyles.Right | AnchorStyles.Bottom, Width = 90, Left = 400 - 190, Top = 10 };
+            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Anchor = AnchorStyles.Right | AnchorStyles.Bottom, Width = 90, Left = 400 - 95, Top = 10 };
+            panel.Controls.Add(ok);
+            panel.Controls.Add(cancel);
+            dlg.Controls.Add(list);
+            dlg.Controls.Add(panel);
+            dlg.AcceptButton = ok;
+            if (dlg.ShowDialog(this) == DialogResult.OK && list.SelectedIndex >= 0)
+            {
+                tabControl.SelectedIndex = list.SelectedIndex;
+            }
+        }
+
+        private void TabControl_DrawItem(object? sender, DrawItemEventArgs e)
+        {
+            try
+            {
+                var tab = tabControl;
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var rect = tab.GetTabRect(e.Index);
+                bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+
+                Color bg = selected ? BgTabActive : BgDark;
+                Color fg = Color.White;
+
+                using (var b = new SolidBrush(bg)) g.FillRectangle(b, rect);
+
+                // Text centered
+                string text = tab.TabPages[e.Index].Text;
+                TextRenderer.DrawText(g, text, tab.Font, rect, fg, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+
+                // Optional bottom highlight for selected (since tabs are at bottom)
+                if (selected)
                 {
-                    var json = File.ReadAllText(openDialog.FileName);
-                    var graphData = JsonSerializer.Deserialize<GraphData>(json);
-
-                    if (graphData == null)
-                    {
-                        MessageBox.Show("Invalid graph file format.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
-                    }
-
-                    // Clear existing nodes and links
-                    if (canvas != null)
-                    {
-                        foreach (var node in nodes)
-                        {
-                            canvas.Controls.Remove(node);
-                        }
-                    }
-                    nodes.Clear();
-                    links.Clear();
-
-                    // Recreate nodes
-                    foreach (var nodeData in graphData.Nodes)
-                    {
-                        var node = new NodeControl(nodeData.Text)
-                        {
-                            Location = new Point(nodeData.X, nodeData.Y),
-                            Size = new Size(nodeData.Width, nodeData.Height)
-                        };
-                        node.LinkInitiated += Node_LinkInitiated;
-                        node.NodeClicked += Node_NodeClicked;
-                        node.PositionChanged += Node_PositionChanged;
-
-                        if (canvas != null)
-                        {
-                            canvas.Controls.Add(node);
-                        }
-                        nodes.Add(node);
-                    }
-
-                    // Recreate links
-                    foreach (var linkData in graphData.Links)
-                    {
-                        if (linkData.FromNodeIndex >= 0 && linkData.FromNodeIndex < nodes.Count &&
-                            linkData.ToNodeIndex >= 0 && linkData.ToNodeIndex < nodes.Count)
-                        {
-                            links.Add(new Link
-                            {
-                                From = nodes[linkData.FromNodeIndex],
-                                To = nodes[linkData.ToNodeIndex]
-                            });
-                        }
-                    }
-
-                    currentFilePath = openDialog.FileName;
-                    Text = originalTitle + " - " + Path.GetFileName(openDialog.FileName);
-                    canvas?.Invalidate();
-                    MessageBox.Show("Graph loaded successfully!", "Open", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    using var pen = new Pen(Color.FromArgb(104, 104, 117), 2);
+                    if (tab.Alignment == TabAlignment.Bottom)
+                        g.DrawLine(pen, rect.Left + 6, rect.Top + 1, rect.Right - 6, rect.Top + 1);
+                    else
+                        g.DrawLine(pen, rect.Left + 6, rect.Bottom - 2, rect.Right - 6, rect.Bottom - 2);
                 }
-                catch (Exception ex)
+            }
+            catch { /* ignore drawing errors */ }
+        }
+
+        private void TabControl_Paint(object? sender, PaintEventArgs e)
+        {
+            try
+            {
+                // Overpaint the page border area with background color to hide white border
+                var rect = tabControl.DisplayRectangle;
+                using var pen = new Pen(BgDark, 3);
+                var r = new Rectangle(rect.X - 2, rect.Y - 2, rect.Width + 4, rect.Height + 4);
+                e.Graphics.DrawRectangle(pen, r);
+            }
+            catch { /* ignore */ }
+        }
+
+        private void RefreshTopTabsPanel()
+        {
+            topTabsPanel.SuspendLayout();
+            topTabsPanel.Controls.Clear();
+            for (int i = 0; i < tabControl.TabPages.Count; i++)
+            {
+                var page = tabControl.TabPages[i];
+                bool isActive = tabControl.SelectedTab == page;
+
+                var item = new Panel
                 {
-                    MessageBox.Show("Error loading graph: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    AutoSize = false,
+                    Height = 22,
+                    BackColor = isActive ? BgTabActive : BgTabInactive,
+                    Margin = new Padding(0),
+                    Padding = new Padding(0),
+                    Tag = page,
+                    Cursor = Cursors.Hand
+                };
+
+                var title = new Label
+                {
+                    AutoSize = true,
+                    Text = page.Text,
+                    ForeColor = Color.White,
+                    BackColor = Color.Transparent,
+                    Margin = new Padding(0),
+                    Padding = new Padding(0),
+                    Dock = DockStyle.Left,
+                    Cursor = Cursors.Hand,
+                    Tag = page
+                };
+                EventHandler activateTab = (s, e) => tabControl.SelectedTab = page;
+                MouseEventHandler closeTab = (s, e) => { if (e.Button == MouseButtons.Middle) tabControl.TabPages.Remove(page); };
+                title.Click += activateTab;
+                item.Click += activateTab;
+                title.MouseUp += closeTab;
+                item.MouseUp += closeTab;
+
+                var close = new Button
+                {
+                    Text = "×",
+                    Font = new Font(Font.FontFamily, 9f, FontStyle.Bold),
+                    Width = 18,
+                    Height = 18,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = isActive ? Color.FromArgb(45,45,50) : Color.FromArgb(34,34,36),
+                    ForeColor = Color.White,
+                    Margin = new Padding(0),
+                    Padding = new Padding(0),
+                    Dock = DockStyle.Right,
+                    TabStop = false,
+                    Tag = page
+                };
+                close.FlatAppearance.BorderSize = 0;
+                close.FlatAppearance.MouseOverBackColor = Color.FromArgb(60, 60, 66);
+                close.FlatAppearance.MouseDownBackColor = Color.FromArgb(76, 76, 84);
+                close.Click += (s, e) =>
+                {
+                    tabControl.TabPages.Remove(page);
+                    if (tabControl.TabPages.Count == 0) CreateNewDocumentTab();
+                };
+
+                item.Controls.AddRange(new Control[] { close, title });
+                item.Width = title.PreferredWidth + close.Width + 4;
+                
+                topTabsPanel.Controls.Add(item);
+            }
+            topTabsPanel.ResumeLayout();
+        }
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+        private void TryApplyDarkTitleBar()
+        {
+            try
+            {
+                int useDark = 1;
+                int result = DwmSetWindowAttribute(this.Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDark, sizeof(int));
+                if (result != 0)
+                {
+                    int attr = DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1;
+                    DwmSetWindowAttribute(this.Handle, attr, ref useDark, sizeof(int));
                 }
+            }
+            catch
+            {
+                // Not supported; ignore.
             }
         }
     }
