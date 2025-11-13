@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -67,8 +68,14 @@ namespace browse_nodes
         public void LoadFromFile(string path)
         {
             if (!File.Exists(path)) throw new FileNotFoundException(path);
-            string json = File.ReadAllText(path);
-            var data = JsonSerializer.Deserialize<GraphData>(json);
+
+            GraphData? data = null;
+            using (var fileStream = File.OpenRead(path))
+            using (var gzip = new GZipStream(fileStream, CompressionMode.Decompress))
+            {
+                data = JsonSerializer.Deserialize<GraphData>(gzip);
+            }
+
             if (data == null) return;
 
             ClearDocument();
@@ -112,7 +119,7 @@ namespace browse_nodes
         {
             using var saveDialog = new SaveFileDialog
             {
-                Filter = "Node Graph (*.nodes)|*.nodes|JSON (*.json)|*.json|All files (*.*)|*.*",
+                Filter = "Node Graph (*.nodes)|*.nodes|All files (*.*)|*.*",
                 DefaultExt = "nodes",
                 AddExtension = true,
                 FileName = string.IsNullOrEmpty(CurrentFilePath) ? "Untitled.nodes" : Path.GetFileName(CurrentFilePath)
@@ -152,8 +159,13 @@ namespace browse_nodes
                 }
             }
 
-            var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(path, json);
+            // Save compressed binary format directly to the chosen path
+            using (var fileStream = File.Create(path))
+            using (var gzip = new GZipStream(fileStream, CompressionLevel.Optimal))
+            {
+                JsonSerializer.Serialize(gzip, data);
+            }
+
             CurrentFilePath = path;
             DisplayName = null; // after save, show file name
         }

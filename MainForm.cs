@@ -107,7 +107,7 @@ namespace browse_nodes
         {
             using var openDialog = new OpenFileDialog
             {
-                Filter = "Node Graph (*.nodes)|*.nodes|JSON (*.json)|*.json|All files (*.*)|*.*",
+                Filter = "Node Graph (*.nodes)|*.nodes|All files (*.*)|*.*",
                 Multiselect = true
             };
             if (openDialog.ShowDialog(this) == DialogResult.OK)
